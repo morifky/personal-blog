@@ -1,0 +1,168 @@
+---
+title: 'Network Namespace on Linux'
+date: '2025-06-05'
+lastmod: '2021-02-01'
+tags: ['linux', 'container']
+draft: false
+summary: 'An overview of the new features released in v1 - code block copy, multiple authors, frontmatter layout and more'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+## Introduction
+
+My personal learning note about network namespace concept on linux, one of the fundamental building blocks that powering software container technology nowadays.
+
+## Glossary
+
+**Namespace**: a feature of the Linux kernel that partitions kernel resources such that one set of processes sees one set of resources while another set of processes sees a different set of resources (wikipedia)
+
+**Host**: In this article, host is a computer device that we use
+
+## What is namespace on linux?
+
+In linux, there are 8 kinds on namespaces that available since kernel 5.6. I'll try to summarize 3 most popular namespace kind as follows:
+
+1. **PID**: A process identifier, that happen on namespace level. It provides processes with independent PID from other namespaces.
+2. **User ID**: Similar with PID above, this feature provides us to grant a granular access control for each running processes. For example, An user with limited access to process that running on namespace A, can't access any process on another namespaces.
+3. **Network namespace**: provides an isolate networking stack (routing, IP address, etc) for each namespaces.
+
+## Labs
+
+Let's begin the labs work to explore the feature available on network namespace.
+
+In this labs, we'll try to run a simple webserver inside a network namespace and make it accessible via host network.
+
+1. Setup network namespace
+
+First, let's create a new network namespace by execute these command:
+
+```
+~$ ip netns add <network-namespace-name>
+```
+
+In this case, i'll create new network namespace called `ns_rifky`
+
+```
+morifky@morifky-GF63-Thin-9RCX:~$ ip netns list
+
+ns_rifky
+```
+
+Next, let's enabling the default loopback inside the created network namespace above
+
+```
+~$ ip netns exec ns_rifky ip link set dev lo up
+```
+
+2. Run web server
+
+Next, we will try to run a simple webserver inside the network namespace we've create above.
+
+The following command will create a simple webserver provided by python3 package.
+
+```
+~$ ip netns exec ns_rifky python3 -m http.server 4000
+Serving HTTP on 0.0.0.0 port 4000 (http://0.0.0.0:4000/) …
+```
+
+Open a new tab in our terminal, and execute these command:
+
+```
+~$ sudo ip netns exec ns_rifky curl localhost:4000
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+```
+
+voila! we've successfully running and accessing the webserver hosted inside `ns_rifky` 🥳
+
+3. Setup virtual ethernet and virtual IP addresses
+
+So far we've successfully setup a webserver inside a dedicated `ns_rifky` network namespace and accessing it via its internal network.
+
+However, we've got some trouble when try to access it via host network.
+
+```
+~$ curl localhost:4000
+curl: (7) Failed to connect to localhost port 4000: Connection refused
+```
+
+let's do another steps to rectify this problem.
+
+Our goals here is to make both host and the network namespace (`ns_rifky`) can communicate and talk to each other. So how to accomplish this goals? **meet virtual ethernet for the rescue.**
+
+Imagine virtual ethernet is like a cable that can bridging the communication between host network and network namespace.
+
+Here, we need to setup a pair of virtual ethernet; one will located inside host network, and the another end will located inside network namespace.
+
+For this labs, we will create a pair of virtual ethernet
+
+- veth_rifky
+
+- veth_ns_rifky (peer)
+
+```
+~$ ip link add dev veth_rifky type veth peer name veth_ns_rifky
+~$ ip link list
+9: veth_ns_rifky@veth_rifky: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+    link/ether 16:27:5a:50:60:5b brd ff:ff:ff:ff:ff:ff
+10: veth_rifky@veth_ns_rifky: <BROADCAST,MULTICAST,M-DOWN> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+    link/ether 6e:f6:f3:3c:59:d5 brd ff:ff:ff:ff:ff:ff
+```
+
+Now, we need to change `veth_rifky` state from DOWN to UP
+
+```
+~$ ip link set dev veth_rifky up
+```
+
+we've successfully run `veth_rifky` inside the host network.
+
+Next, we need to moved its peer -`veth_ns_rifky`- onto the network namespace `ns_rifky`
+
+```
+~$ sudo ip link set veth_ns_rifky netns ns_rifky
+```
+
+Don't forget to also change `veth_ns_rifky` state from DOWN to UP
+
+```
+~$ ip netns exec ns_rifky ip link set dev veth_ns_rifky up
+```
+
+Last, we need to add some "identifier" for both virtual ethernet.
+
+This will make the packet can be routed to their destination properly.
+
+For this labs we will use these address:
+
+- ns_rifky = 10.0.0.10/24
+
+- veth_ns_rifky = 10.0.0.11/24
+
+```
+~$ ip address add 10.0.0.10/24 dev veth_rifky
+~$ ip netns exec ns_rifky ip address add 10.0.0.11/24 dev veth_ns_rifky
+```
+
+Now, we can try to re-accessing the webserver via host network, and here's the result
+
+```
+$ curl 10.0.0.11:4000
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>Directory listing for /</title>
+```
+
+Congrats! we've finally make both host and our dedicated network namespace can communicate and talk to each other.
+Below i also attaching an image to visualize the system we've created in this labs
+
+![Drawing book](/static/images/linux-ns.png)
+
+## Reference:
+
+- https://dustinspecker.com/posts/how-do-kubernetes-and-docker-create-ip-addresses/
