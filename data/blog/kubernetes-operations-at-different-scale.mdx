@@ -1,0 +1,134 @@
+---
+title: 'Operating EKS at different scale - lesson learned'
+date: '2025-06-05'
+lastmod: '2021-02-01'
+tags: ['kubernetes', 'infrastructure', 'learning-notes']
+draft: false
+summary: 'Lessons Learned from Running EKS at Different Scales'
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+## Introduction
+
+I’ve had the chance (and sometimes the stress) to operate Amazon EKS clusters for many different kinds of projects. Some were small, internal environments—just a few requests per second and only a few users.
+
+Others were big production systems with high traffic—**hundreds of EC2 nodes, over a thousand pods, and thousands of requests per second.** These systems had to support a lot of users at the same time.
+
+When the traffic was small, everything was quiet. We had enough resources, and most things just worked. But when the system started to grow, the problems also started to grow. Things became more complex, and I had to be more careful about how everything was set up and managed.
+
+From all of this, I’ve learned a lot—not just about Kubernetes, but also about what it really means to run a platform that other teams and people depend on.
+
+## Here's what I’ve learned (mostly the hard way):
+
+### 1. Starting is Easy, Operating is an Art
+
+Kubernetes gives you a lot of power from the beginning. Creating a Deployment and running your app is simple. But running a real production system is not just about that.
+
+As your system grows, you will face new problems, like:
+
+- Pods don’t get scheduled properly because of resource rules like pod anti-affinity
+
+- Pods take a long time to start because of image pull throttling
+
+- Unexpected AWS costs when unused workloads keep using expensive resources
+
+Operating Kubernetes at different scale is not just about using YAML files. It becomes more like doing real systems engineering. You need good configurations, proven patterns, and tools that help you manage the system—not just your apps.
+
+### 2. Plan Your VPC CIDR
+
+If you use the default VPC CNI (the `aws-node` plugin), each pod will use one IP address from your VPC. This is fine at first, but at a larger scale, it can become a hidden problem.
+
+I’ve seen a cluster fail to scale during high traffic—just because we ran out of available IPs. That was not fun, especially in the middle of a busy time.
+
+**Tip**: When creating your VPC, choose a bigger CIDR block, like /16, if possible. Also, take time to understand how IP addresses are used in EKS. If you need more flexibility, you can look into using custom networking with secondary CIDRs to give more IPs to your nodes.
+
+### 3. Watch Out for CoreDNS and `ndots`
+
+CoreDNS runs at the core of every name resolution in your cluster. A misconfigured ndots value can cause seemingly random slowdowns or timeouts when resolving services.
+
+Setting `ndots:5` might make sense in some environments, but in Kubernetes, it can delay external DNS lookups as the resolver attempts multiple internal domain paths first.
+
+👉 [Here’s a great explanation about it](https://pracucci.com/kubernetes-dns-resolution-ndots-options-and-why-it-may-affect-application-performances.html)
+
+### 4. Understand Your Autoscaler Limits
+
+Just because you have an autoscaler doesn’t mean it will always work the way you expect.
+
+**Karpenter** is fast and smart when it comes to provisioning new nodes. But when your cluster is scaling quickly, you may hit limits—like provisioner settings or AWS resource limits.
+
+**Cluster Autoscaler** also works, but it’s slower and more careful. During traffic spikes, it might take longer to react, which can cause delays or failed pods.
+
+And don’t forget about hard AWS limits, such as:
+
+- EC2 instance launch quotas
+
+- Number of ENIs (Elastic Network Interfaces) per subnet
+
+- Number of IPs per ENI
+
+- API rate limits
+
+**📝 Checklist:**
+Make sure you know your AWS service quotas.
+
+### 5. Service Mesh is Fun (Until You Have to Operate It)
+
+This is cool stuff. mTLS, retries, traffic shifting—it all feels powerful and modern. But it can also turn into a rabbit hole if you're not careful.
+
+For example, **Linkerd** is easy to install. But once you turn on features like outbound proxying, you're adding extra hops between services. This can bring more latency and use more memory. At small scale, it’s fine. But at large scale, even a few milliseconds can add up and hurt performance.
+
+**Tips:** If you don’t have a clear reason to use service mesh—**just skip it.** Don’t add complexity you don’t need.
+
+### 6. Observability is a good investment
+
+Logs, metrics, and traces will save you when something goes wrong—and trust me, something will go wrong.
+
+If you don’t know what’s happening inside your system, fixing problems becomes really hard. That’s why observability is super important from the beginning, not just later when things break.
+
+Here’s what I’ve seen work well:
+
+- Prometheus – great for infrastructure metrics (CPU, memory, pod status, etc.). Also custom metrics
+
+- Grafana Tempo – for tracing how a request moves between services
+
+- Fluentd/Fluentbit – to collect and forward logs
+
+- OpenTelemetry + Grafana – to process and view everything in one place (logs, metrics, and traces)
+
+### 7. Blueprint Your Infrastructure
+
+This was a good investment for me: creating reusable and version-controlled infrastructure blueprints.
+
+Whether you're setting up a dev cluster for a new team, or building a customer-facing environment with special traffic and scaling needs—having a ready-to-use template saves time and avoids mistakes.
+
+Use tools like **Terraform** for **infrastructure** and GitOps tools like **fluxCD/argoCD** for **managing k8s manifest** to create these blueprints. They should include things like:
+
+- Node groups and Karpenter settings
+
+- VPC and subnet design
+
+- Observability tools (Prometheus, Grafana, etc.)
+
+- Basic security policies
+
+- Default namespaces and RBAC setup
+
+Think of it like building a clear road for your team—instead of making them walk through a jungle every time they deploy something.
+
+### 8. Invest on automation
+
+Manual steps? Meh.
+Scripts? Better.
+CI/CD and GitOps? Even better.
+
+The more you automate, the smoother your operations will be.
+It’s not just about speed—it’s about doing things the same way every time, without mistakes, and saving yourself from boring manual work.
+
+## Final Thoughts
+
+Kubernetes (and EKS in particular) is a very powerful platform.
+
+But the real learning starts when your system begins to scale, when you face issues in production, and when other teams depend on the platform you build. That’s when you truly understand what it means to run Kubernetes in real life.
+
+Don’t get me wrong — this whole journey has been a really fun experience for me. I’ve enjoyed learning from every challenge, and I hope I can keep that same feeling as I keep growing.

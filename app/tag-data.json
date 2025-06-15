@@ -1,4 +1,6 @@
 {
+  "kubernetes": 1,
+  "notes": 1,
   "linux": 1,
   "container": 1
 }
