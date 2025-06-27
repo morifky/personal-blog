@@ -1,6 +1,7 @@
 {
   "kubernetes": 1,
-  "notes": 1,
+  "infrastructure": 1,
+  "learning-notes": 1,
   "linux": 1,
   "container": 1
 }
