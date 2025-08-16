@@ -1,0 +1,117 @@
+---
+title: 'AWS VPC with custom DHCP option sets'
+date: '2025-08-16'
+tags: ['AWS', 'infrastructure', 'learning-notes', 'networking']
+draft: false
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+## Introduction
+
+In my current job, I manage customer environments hosted on AWS.
+
+A few weeks ago, one of our customers had a request that sounded simple at first.
+
+They were running an **internal SMTP server** inside their AWS account, and its DNS records were stored in their own Route53 private hosted zone.
+
+They wanted the applications we manage to be able to resolve those Route53 records so the applications could connect to the SMTP server.
+
+The straightforward solution? Use Route53 VPC associations.
+
+```
++-------------------+
+|    Application    |
++-------------------+
+          |
+          v
++-------------------+
+|   DNS Lookup      |
++-------------------+
+          |
+          v
++---------------------------+
+| Route53 (Customer Records)|
+|  + SMTP Server Hostname   |
++---------------------------+
+          |
+          v
++-------------------+
+|   SMTP Server     |
++-------------------+
+```
+
+But here’s the catch:
+
+the customer’s environment we managed was using a custom DHCP options set.
+That meant every DNS lookup request from our applications was forwarded to our company’s internal DNS server — not AWS’s Route53 resolver.
+
+## AWS Reserved DNS Servers
+
+We learned that upon creating a VPC, [AWS automatically provides](https://docs.aws.amazon.com/vpc/latest/userguide/AmazonDNS-concepts.html#AmazonDNS) a built-in DNS resolver at special reserved IP addresses:
+
+1. 169.254.169.253 (IPv4 universal)
+
+2. fd00:ec2::253 (IPv6)
+
+3. VPC CIDR base + 2 (for example, in 10.0.0.0/16, the DNS IP is 10.0.0.2)
+
+These resolvers work regardless of the DHCP options set.
+
+## Testing It Out
+
+### Setup:
+
+- VPC CIDR block: **_10.0.0.0/16_**
+- AWS reserved DNS IP: **_10.0.0.2_**
+
+**1. DNS lookup using our internal company DNS server**
+
+![Error](/static/images/error-nslookup.png)
+
+**Result**: Works for internal company domains, but cannot resolve customer’s Route53 records.
+
+**2. DNS lookup using AWS reserved DNS server (10.0.0.2)**
+
+![Success](/static/images/success-nslookup.png)
+
+**Result**: Works as expected. Able to resolve customer Route53 records.
+
+## Resolution
+
+Once we learned about this behavior, we decided to use the following approach:
+
+for any DNS query targeted at the SMTP server, we forward the resolution from our internal DNS server to AWS DNS.
+
+```
++-------------------+
+|    Application    |
++-------------------+
+          |
+          v
++-------------------+
+| Internal DNS      |
+| (Company DNS)     |
++-------------------+
+     |        |
+     |        |
+     |        +----------------------+
+     |                               |
+     v                               v
++-------------------+       +---------------------------+
+| Normal Resolution |       | Conditional Forwarder to |
+| (company domains, |       | AWS VPC DNS              |
+| internet, etc.)   |       | (10.0.0.2 / 169.254.169.253) |
++-------------------+       +---------------------------+
+                                    |
+                                    v
+                         +-------------------+
+                         | Route53 / AWS DNS |
+                         +-------------------+
+```
+
+## Final Thoughts
+
+Oftentimes, DHCP settings are taken for granted.
+
+This problem taught me another lesson: AWS provides hidden but powerful capabilities that can still support DNS resolution even when we step outside the default setup.
