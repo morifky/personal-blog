@@ -1,0 +1,149 @@
+﻿---
+title: 'Leveraging Observability Practices in Software Development'
+date: '2025-09-10'
+tags: ['observability', 'opentelemetry', 'learning-notes']
+draft: true
+layout: PostSimple
+bibliography: references-data.bib
+---
+
+## Introduction
+
+In my recent exploration of observability practices, I built a **cottage booking application** to demonstrate how proper observability tooling can help developers identify and debug complex issues in production systems.
+
+The project showcases a complete observability stack with **OpenTelemetry**, **Prometheus**, **Grafana**, and **Loki**  commonly known as the "MTL" (Metrics, Traces, Logs) approach.
+
+What makes this experiment particularly interesting is the inclusion of a **database lock contention scenario** that would be nearly impossible to debug without proper observability instrumentation.
+
+***The complete source code and setup instructions are available at: [github.com/morifky/cottage-booking-app](https://github.com/morifky/cottage-booking-app)***
+
+## The Observability Stack
+
+### Key Components
+
+**1. OpenTelemetry Integration**
+- Auto-instrumentation for GORM database operations
+- Custom metrics for HTTP requests and business logic
+- Distributed tracing across service boundaries
+
+**2. Metrics Collection**
+- HTTP request duration histograms
+- Booking creation counters
+- Database operation metrics
+
+**3. Centralized Logging**
+- Structured logging with Zap
+- Log aggregation via Loki
+- Correlation with traces and metrics
+
+## The Database Lock Problem
+
+### The Scenario
+
+The application includes a unique feature to demonstrate **database lock contention**  a common issue in production systems that's notoriously difficult to debug.
+
+```
+func (br *BookingRepository) SaveWithLock(ctx context.Context, booking *models.Booking, holdDuration time.Duration) error {
+    tracer := otel.Tracer("booking-repository")
+    ctx, span := tracer.Start(ctx, "SaveWithLock")
+    defer span.End()
+
+    span.SetAttributes(
+        attribute.Int("visitor_id", int(booking.VisitorID)),
+        attribute.Int("room_id", int(booking.RoomID)),
+        attribute.String("hold_duration", holdDuration.String()),
+    )
+
+    return br.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+        // Acquire exclusive table lock
+        if err := tx.Exec("LOCK TABLE bookings IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+            span.SetStatus(codes.Error, "Failed to acquire table lock")
+            return err
+        }
+
+        // Hold the lock for specified duration
+        select {
+        case <-time.After(holdDuration):
+            // Continue after hold duration
+        case <-ctx.Done():
+            span.SetStatus(codes.Error, "Request timed out")
+            return ctx.Err()
+        }
+
+        return tx.Create(booking).Error
+    })
+}
+```
+
+### The Problem Without Observability
+
+Without proper instrumentation, this scenario would manifest as:
+- **Mysterious timeouts** in the application
+- **No visibility** into what's causing the delays
+- **Difficult debugging** of concurrent request behavior
+- **Silent failures** that are hard to reproduce
+
+### The Solution With Observability
+
+With OpenTelemetry tracing, we can see exactly what's happening:
+
+**Terminal 1** - Acquire exclusive table lock:
+```
+curl -X POST http://localhost:8080/booking/with-lock \
+  -H "Content-Type: application/json" \
+  -d '{"visitor_id":1,"room_id":1,"hold_lock_seconds":100}'
+```
+
+**Terminal 2** - Try concurrent booking (will timeout):
+```
+curl -X POST http://localhost:8080/booking \
+  -H "Content-Type: application/json" \
+  -d '{"visitor_id":2,"room_id":2}'
+```
+
+The traces show:
+- **Lock acquisition** timing
+- **Hold duration** visualization
+- **Timeout behavior** with context cancellation
+- **Request correlation** across concurrent operations
+
+
+## Key Learnings
+
+### 1. The Power of Distributed Tracing
+
+Distributed tracing revealed the exact sequence of events during lock contention:
+- When the lock was acquired
+- How long it was held
+- Why subsequent requests timed out
+- The correlation between different user requests
+
+### 2. Metrics Tell the Story
+
+Custom metrics provided quantitative insights:
+- Request success/failure rates
+- Performance degradation patterns
+- Business logic execution counts
+
+### 3. Logs Complete the Picture
+
+Structured logs with correlation IDs tied everything together:
+- Error messages with trace context
+- Debug information for troubleshooting
+- Audit trails for business operations
+
+
+## Final Thoughts
+
+This experiment demonstrated that **observability is not just about debugging**  it's about understanding system behavior, identifying bottlenecks, and making data-driven decisions.
+
+The database lock scenario would have been nearly impossible to debug without proper instrumentation. With observability in place, we could:
+
+- **Identify the root cause** immediately
+- **Understand the impact** on other requests
+- **Measure the duration** of the problem
+- **Correlate events** across the system
+
+The key takeaway: **Invest in observability from day one**. The cost of adding it later far exceeds the upfront investment, and the insights it provides are invaluable for building reliable, maintainable systems.
+
+---
